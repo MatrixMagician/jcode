@@ -406,3 +406,65 @@ fn ordinary_wrapped_commands_still_run_immediately() {
         "gate became noisy on normal work: {noisy:#?}"
     );
 }
+
+/// Regression: read-only commands were flagged as destructive because the
+/// assessor scanned every argument of any segment containing a redirect, and
+/// treated `-r` as recursive regardless of the verb.
+#[test]
+fn read_only_commands_are_never_flagged() {
+    let ctx = ctx();
+    let mut noisy = Vec::new();
+    for command in [
+        // `-r` on a non-destructive verb is not a recursive delete.
+        "grep -rn \"pattern\" /home/u/repos",
+        "grep -rn \"cannot be confirmed\" /home/u/repos",
+        "ls -R /home/u/.jcode",
+        "cp -r src dst",
+        "rsync -r a/ b/",
+        // /dev/null is a sink, not a protected system path.
+        "ls /home/u/.jcode 2>/dev/null",
+        "cat missing 2>/dev/null",
+        "echo hi > /dev/null",
+        "make 2>/dev/null | head",
+        // Reading outside the working directory is not a mutation.
+        "ls /home/u/repos/github",
+        "cat /etc/hostname",
+        "wc -l /home/u/notes.txt",
+        "stat /usr/bin/env",
+        // A quoted search string is not a path operand.
+        "rg \"rm -rf\" .",
+    ] {
+        let level = assess(command, &ctx).level;
+        if !level.runs_immediately() {
+            noisy.push(format!("{command} -> {level:?}"));
+        }
+    }
+    assert!(
+        noisy.is_empty(),
+        "read-only commands were flagged: {noisy:#?}"
+    );
+}
+
+/// The fix must not weaken the real protections.
+#[test]
+fn destructive_commands_are_still_caught_after_the_false_positive_fix() {
+    let ctx = ctx();
+    for command in ["rm -rf /", "rm -rf ~", "rm -rf $HOME", "rm -rf /etc"] {
+        assert_eq!(
+            assess(command, &ctx).level,
+            RiskLevel::Catastrophic,
+            "{command} must stay catastrophic"
+        );
+    }
+    for command in [
+        "rm -rf /home/u/other-project",
+        "shred /home/u/notes.txt",
+        "dd if=/dev/zero of=/dev/sda",
+        "echo x > /home/u/notes.txt",
+    ] {
+        assert!(
+            !assess(command, &ctx).level.runs_immediately(),
+            "{command} must still be gated"
+        );
+    }
+}

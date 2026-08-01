@@ -307,11 +307,19 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         return;
     }
 
-    let mut targets: Vec<&Token> = tokens
-        .iter()
-        .skip(1)
-        .filter(|t| !t.is_flag() && !t.is_operator)
-        .collect();
+    // Only a destructive verb makes its own operands targets. A read-only
+    // program that merely redirects (`grep -rn pat ~/repos 2>/dev/null`) puts
+    // exactly one file at risk: the redirect destination. Scanning its other
+    // arguments produced false positives on harmless commands.
+    let mut targets: Vec<&Token> = if triggered {
+        tokens
+            .iter()
+            .skip(1)
+            .filter(|t| !t.is_flag() && !t.is_operator && !t.is_truncating_redirect_target)
+            .collect()
+    } else {
+        Vec::new()
+    };
     targets.extend(redirect_targets.iter().copied());
 
     // A destructive command fed by a pipe takes its operands from the previous
@@ -343,7 +351,9 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         return;
     }
 
-    let recursive = tokens.iter().any(|t| t.is_recursive_flag());
+    // Recursion only matters for a verb that actually recurses destructively;
+    // `grep -r` and `cp -r` must not be reported as recursive deletes.
+    let recursive = triggered && tokens.iter().any(|t| t.is_recursive_flag());
 
     for target in targets {
         // `dd`-style `key=value` operands hide the path from a naive scan.

@@ -135,6 +135,13 @@ fn normalize(path: &Path) -> PathBuf {
 pub fn is_catastrophic_target(path: &Path, ctx: &RiskContext) -> bool {
     let path = normalize(path);
 
+    // The standard null/stdio devices are write-only sinks that cannot be
+    // damaged. `cmd 2>/dev/null` is the single most common shell idiom there
+    // is, and flagging it as destroying `/dev` was pure noise.
+    if is_null_device(&path) {
+        return false;
+    }
+
     // Exact system roots, plus anything inside the ones whose contents are as
     // unrecoverable as the directory itself (`/etc/passwd`). `/home` and
     // `/Users` are deliberately not recursive: a user's own project lives
@@ -178,6 +185,11 @@ pub fn classify_target(
     recursive: bool,
     ctx: &RiskContext,
 ) -> Option<RiskFinding> {
+    // Redirecting to a null/stdio device destroys nothing.
+    if is_null_device(expanded) {
+        return None;
+    }
+
     // Glob and variable expansion we did not perform: we cannot know the
     // footprint, so escalate rather than guess.
     if raw.contains('*') || raw.contains('?') {
@@ -271,6 +283,13 @@ fn is_temp_path(path: &Path) -> bool {
     ["/tmp", "/var/tmp", "/private/tmp"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
+}
+
+/// Devices that discard or forward output rather than storing it.
+pub(crate) fn is_null_device(path: &Path) -> bool {
+    ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"]
+        .iter()
+        .any(|p| path == Path::new(p))
 }
 
 #[cfg(test)]
