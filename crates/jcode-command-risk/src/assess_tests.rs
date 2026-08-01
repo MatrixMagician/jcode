@@ -99,7 +99,7 @@ fn deleting_outside_the_project_asks_for_justification() {
 fn non_rm_destructive_tools_are_covered() {
     // A name-based denylist would miss all of these.
     assert_eq!(level("find /home/u -delete"), RiskLevel::Catastrophic);
-    assert!(level("dd if=/dev/zero of=/dev/sda").runs_immediately() == false);
+    assert!(!level("dd if=/dev/zero of=/dev/sda").runs_immediately());
     assert!(level("shred /home/u/other/secrets.txt") >= RiskLevel::Confirm);
 }
 
@@ -304,7 +304,6 @@ fn wrapper_commands_do_not_hide_the_real_program() {
 
 #[test]
 fn nested_wrappers_are_unwrapped_all_the_way_down() {
-    let ctx = ctx();
     assert_eq!(
         level("sudo env nice -n 5 rm -rf ~"),
         RiskLevel::Catastrophic
@@ -358,7 +357,6 @@ fn piped_deletes_cannot_launder_their_targets() {
 fn files_inside_system_directories_are_protected_too() {
     // Exact-root matching left /etc/passwd merely "Confirm", and apply_patch
     // consults only the catastrophic tier, so it would have deleted it.
-    let ctx = ctx();
     for path in [
         "rm -f /etc/passwd",
         "rm -rf /usr/bin/env",
@@ -373,7 +371,6 @@ fn files_inside_system_directories_are_protected_too() {
 fn user_directories_under_home_root_stay_workable() {
     // /home and /Users must not become recursive, or every project path under
     // them would be blocked.
-    let ctx = ctx();
     assert!(level("rm -rf /home/u/proj/target").runs_immediately());
     assert_eq!(level("rm -rf /home"), RiskLevel::Catastrophic);
 }
@@ -472,7 +469,9 @@ fn destructive_commands_are_still_caught_after_the_false_positive_fix() {
 #[test]
 fn readonly_commands_with_devnull_and_outside_paths_are_safe() {
     let ctx = RiskContext {
-        working_dir: Some(PathBuf::from("/home/oliverh/repos/github/MatrixMagician/Sift")),
+        working_dir: Some(PathBuf::from(
+            "/home/oliverh/repos/github/MatrixMagician/Sift",
+        )),
         home_dir: Some(PathBuf::from("/home/oliverh")),
     };
     for cmd in [
@@ -483,6 +482,11 @@ fn readonly_commands_with_devnull_and_outside_paths_are_safe() {
         "grep -n jcode .gitignore; echo \"exit=$?\"; git status --short",
     ] {
         let got = assess(cmd, &ctx);
-        assert_eq!(got.level, RiskLevel::Safe, "cmd: {cmd}\n{}", got.explanation());
+        assert_eq!(
+            got.level,
+            RiskLevel::Safe,
+            "cmd: {cmd}\n{}",
+            got.explanation()
+        );
     }
 }
