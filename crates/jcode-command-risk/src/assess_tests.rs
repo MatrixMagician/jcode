@@ -468,3 +468,21 @@ fn destructive_commands_are_still_caught_after_the_false_positive_fix() {
         );
     }
 }
+
+#[test]
+fn readonly_commands_with_devnull_and_outside_paths_are_safe() {
+    let ctx = RiskContext {
+        working_dir: Some(PathBuf::from("/home/oliverh/repos/github/MatrixMagician/Sift")),
+        home_dir: Some(PathBuf::from("/home/oliverh")),
+    };
+    for cmd in [
+        "ls ~/.jcode/ 2>/dev/null; echo ---; cat ~/.jcode/config.json 2>/dev/null | head -60",
+        "cd /home/oliverh/repos/github/jcode 2>/dev/null && ls && git log --oneline -3",
+        "echo hi 2>/dev/null",
+        "ls -d /home/oliverh/repos/github/jcode 2>&1 | head",
+        "grep -n jcode .gitignore; echo \"exit=$?\"; git status --short",
+    ] {
+        let got = assess(cmd, &ctx);
+        assert_eq!(got.level, RiskLevel::Safe, "cmd: {cmd}\n{}", got.explanation());
+    }
+}
