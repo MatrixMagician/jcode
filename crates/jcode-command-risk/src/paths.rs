@@ -205,6 +205,20 @@ pub fn classify_target(
                 target: Some(raw.to_string()),
             });
         }
+        // A glob cannot escape the directory it is anchored in, so when that
+        // directory is inside the working directory or a temp dir the blast
+        // radius is bounded no matter what the glob expands to. Flagging
+        // `rm -f build-*.json` in the project directory was noise, and noise is
+        // what teaches people to wave the gate through.
+        if let Some(anchor) = glob_anchor(expanded)
+            && (is_within_working_dir(&anchor, ctx) || is_temp_path(&anchor))
+        {
+            return recursive.then(|| RiskFinding {
+                level: RiskLevel::Low,
+                reason: "recursive delete of a glob inside the working directory".to_string(),
+                target: Some(raw.to_string()),
+            });
+        }
         return Some(RiskFinding {
             level: RiskLevel::Confirm,
             reason: "target contains a glob, so the exact set of affected files \
@@ -252,12 +266,7 @@ pub fn classify_target(
         });
     }
 
-    let inside_cwd = ctx
-        .working_dir
-        .as_ref()
-        .is_some_and(|cwd| expanded.starts_with(normalize(cwd)));
-
-    if inside_cwd {
+    if is_within_working_dir(expanded, ctx) {
         // The routine case: an agent tidying up its own workspace.
         return recursive.then(|| RiskFinding {
             level: RiskLevel::Low,
@@ -275,6 +284,27 @@ pub fn classify_target(
         reason: "targets a path outside the working directory".to_string(),
         target: Some(expanded.display().to_string()),
     })
+}
+
+/// The deepest directory a glob is anchored in: the prefix of components
+/// before the first one containing a wildcard. `~/p/build-*.json` anchors at
+/// `~/p`, and `~/*/x` anchors at `~`, which is correctly *not* contained.
+fn glob_anchor(path: &Path) -> Option<PathBuf> {
+    let mut anchor = PathBuf::new();
+    for component in path.components() {
+        let text = component.as_os_str().to_string_lossy();
+        if text.contains('*') || text.contains('?') {
+            return (!anchor.as_os_str().is_empty()).then_some(anchor);
+        }
+        anchor.push(component.as_os_str());
+    }
+    None
+}
+
+fn is_within_working_dir(path: &Path, ctx: &RiskContext) -> bool {
+    ctx.working_dir
+        .as_ref()
+        .is_some_and(|cwd| path.starts_with(normalize(cwd)))
 }
 
 /// Temp directories are conventionally disposable, so deleting inside them is

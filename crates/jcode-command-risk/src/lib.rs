@@ -159,16 +159,63 @@ const WRAPPER_COMMANDS: &[&str] = &[
     "builtin", "exec", "setsid", "stdbuf", "chroot", "su", "watch", "eval",
 ];
 
-/// Wrapper options that consume the following word as their value.
-const WRAPPER_FLAGS_WITH_VALUES: &[&str] = &[
-    "-n",
-    "-u",
-    "-s",
-    "-c",
-    "-k",
-    "--signal",
-    "--adjustment",
-    "--user",
+/// Wrapper options that consume the following word as their value, per
+/// wrapper. Flag semantics are not global: `nice -n 10` takes a value, but
+/// `sudo -n` (non-interactive) does not, and treating it as if it did swallowed
+/// the wrapped program and reported a plain `sudo -n cmd` as unidentifiable.
+const WRAPPER_FLAGS_WITH_VALUES: &[(&str, &[&str])] = &[
+    (
+        "sudo",
+        &[
+            "-u", "-g", "-p", "-C", "-h", "-r", "-t", "--user", "--group", "--prompt",
+        ],
+    ),
+    ("doas", &["-u", "-C"]),
+    ("nice", &["-n", "--adjustment"]),
+    ("ionice", &["-c", "-n", "-p", "--class", "--classdata"]),
+    ("timeout", &["-s", "-k", "--signal", "--kill-after"]),
+    (
+        "xargs",
+        &[
+            "-n",
+            "-P",
+            "-I",
+            "-d",
+            "-s",
+            "-a",
+            "--max-args",
+            "--replace",
+        ],
+    ),
+    ("env", &["-u", "--unset", "-C", "--chdir"]),
+    ("su", &["-c", "-s", "-g", "--command", "--shell"]),
+    ("watch", &["-n", "-d", "--interval"]),
+    ("stdbuf", &["-i", "-o", "-e"]),
+    ("setsid", &[]),
+    ("nohup", &[]),
+    ("time", &["-f", "-o", "--format", "--output"]),
+    ("chroot", &["--userspec", "--groups"]),
+    ("command", &[]),
+    ("builtin", &[]),
+    ("exec", &["-a"]),
+    ("eval", &[]),
+];
+
+/// The value-taking flags for one wrapper, empty when it has none.
+fn wrapper_value_flags(wrapper: &str) -> &'static [&'static str] {
+    WRAPPER_FLAGS_WITH_VALUES
+        .iter()
+        .find(|(name, _)| *name == wrapper)
+        .map(|(_, flags)| *flags)
+        .unwrap_or(&[])
+}
+
+/// Shell keywords that introduce a command rather than being one. `then rm -rf
+/// ~` must be assessed as `rm -rf ~`, not dismissed because `then` is not a
+/// destructive program.
+const SHELL_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "elif", "fi", "while", "until", "do", "done", "for", "case", "esac",
+    "select", "function", "{", "}", "!",
 ];
 
 /// Shells, which take their program from a string argument we cannot parse
@@ -225,6 +272,7 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         if !WRAPPER_COMMANDS.contains(&name.as_str()) {
             break;
         }
+        let value_flags = wrapper_value_flags(&name);
         wrapped_by = Some(name);
         // Skip the wrapper plus its own options and `VAR=value` assignments,
         // landing on the wrapped program. Options that take a separate value
@@ -240,7 +288,7 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
             if token.is_flag() {
                 idx += 1;
                 // A short flag known to take an argument consumes the next word.
-                if WRAPPER_FLAGS_WITH_VALUES.contains(&token.text.as_str()) && idx < rest.len() {
+                if value_flags.contains(&token.text.as_str()) && idx < rest.len() {
                     idx += 1;
                 }
                 continue;
@@ -254,6 +302,16 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
             break;
         }
         tokens = &rest[idx..];
+    }
+
+    // Drop leading shell keywords so the real command underneath is the one
+    // classified. `for f in x; do rm -rf ~; done` splits into a segment that
+    // begins `do rm ...`, which would otherwise look like a program named `do`.
+    while tokens
+        .first()
+        .is_some_and(|t| SHELL_KEYWORDS.contains(&t.text.as_str()))
+    {
+        tokens = &tokens[1..];
     }
 
     let Some(program) = tokens.first() else {

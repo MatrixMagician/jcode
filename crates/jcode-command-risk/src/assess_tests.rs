@@ -490,3 +490,97 @@ fn readonly_commands_with_devnull_and_outside_paths_are_safe() {
         );
     }
 }
+
+#[test]
+fn redirect_to_dev_null_inside_substitution_is_not_an_attack_on_dev() {
+    // Regression: the tokenizer treated `)` as a path character, so
+    // `2>/dev/null` inside `$( )` or a `case` arm produced the target
+    // `/dev/null)`. That missed the null-device check and then matched the
+    // recursive `/dev` protection, permanently blocking read-only commands.
+    for command in [
+        r#"t=$(readlink "$fd" 2>/dev/null)"#,
+        r#"for fd in /proc/1/fd/*; do t=$(readlink $fd 2>/dev/null); done"#,
+        r#"case "$t" in *accel*) cat /proc/x 2>/dev/null;; esac"#,
+        r#"x=$(grep -m1 '^go ' "$f" 2>/dev/null)"#,
+    ] {
+        assert_eq!(
+            level(command),
+            RiskLevel::Safe,
+            "read-only command wrongly flagged: {command}"
+        );
+    }
+}
+
+#[test]
+fn a_subshell_body_is_still_assessed() {
+    // Making parens terminate words must not let a subshell hide its payload.
+    for command in [
+        "(rm -rf ~)",
+        "( rm -rf ~ )",
+        "x=$(rm -rf ~)",
+        "case x in y) rm -rf ~;; esac",
+        "if true; then rm -rf ~; fi",
+        "for f in a b; do rm -rf ~; done",
+        "while true; do rm -rf /etc; done",
+    ] {
+        assert_eq!(
+            level(command),
+            RiskLevel::Catastrophic,
+            "payload escaped assessment: {command}"
+        );
+    }
+}
+
+#[test]
+fn wrapper_flags_are_interpreted_per_command() {
+    // `sudo -n` is non-interactive and takes no value; `nice -n` takes one.
+    // A global flag table conflated them and swallowed the wrapped program.
+    assert_eq!(level("sudo -n ls /sys"), RiskLevel::Safe);
+    assert_eq!(level("sudo -n /usr/bin/xdnatop --once"), RiskLevel::Safe);
+
+    // The value-taking forms must still be unwrapped correctly.
+    for command in [
+        "sudo -n rm -rf ~",
+        "sudo -u root rm -rf ~",
+        "nice -n 10 rm -rf ~",
+        "timeout 5 rm -rf ~",
+        "xargs -n 1 rm -rf ~",
+        "ionice -c 3 rm -rf ~",
+    ] {
+        assert_eq!(
+            level(command),
+            RiskLevel::Catastrophic,
+            "wrapper hid a destructive payload: {command}"
+        );
+    }
+}
+
+#[test]
+fn globs_confined_to_the_workspace_do_not_need_confirmation() {
+    // A glob cannot escape the directory it is anchored in, so cleanup inside
+    // the working directory or a temp dir is routine, not a reflection turn.
+    assert_eq!(level("rm -f build-*.json"), RiskLevel::Safe);
+    assert_eq!(level("rm -f /home/u/proj/out-*.txt"), RiskLevel::Safe);
+    assert_eq!(level("cd /tmp && rm -f scratch-*.json"), RiskLevel::Safe);
+    assert_eq!(level("rm -rf /home/u/proj/dist/*"), RiskLevel::Low);
+}
+
+#[test]
+fn globs_that_escape_the_workspace_are_still_caught() {
+    for command in [
+        "rm -rf ~/*",
+        "rm -rf /*",
+        "rm -rf ~/.ssh/*",
+        "rm -rf /etc/*",
+    ] {
+        assert_eq!(
+            level(command),
+            RiskLevel::Catastrophic,
+            "glob over a protected directory was allowed: {command}"
+        );
+    }
+    // A wildcard *directory* component is not anchored inside the workspace,
+    // so it stays unresolved and earns a confirmation.
+    assert_eq!(level("rm -rf /home/u/*/node_modules"), RiskLevel::Confirm);
+    assert_eq!(level("rm -f /home/other/*.txt"), RiskLevel::Confirm);
+}

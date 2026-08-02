@@ -54,7 +54,7 @@ impl Token {
 }
 
 /// Characters that separate one command from the next.
-const SEGMENT_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "\n"];
+const SEGMENT_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "\n", "(", ")"];
 
 /// Split a command line into individual command segments, each tokenized.
 ///
@@ -180,6 +180,21 @@ pub fn tokenize(command: &str) -> Vec<Token> {
                     }
                     pending_redirect = true;
                 }
+            }
+            // Subshell and `case`-pattern punctuation. These are shell
+            // metacharacters, so they end a word: without this,
+            // `t=$(readlink f 2>/dev/null)` yields the target `/dev/null)`,
+            // which fails the null-device check and is then read as an attack
+            // on `/dev`. Unquoted parens are never part of a path.
+            //
+            // They are emitted as operators so that a command substitution or
+            // subshell starts a fresh segment: the body of `x=$(rm -rf ~)` is
+            // a command in its own right and must be assessed as one.
+            '(' | ')' => {
+                flush!();
+                let mut op = Token::word(c.to_string());
+                op.is_operator = true;
+                tokens.push(op);
             }
             '<' => flush!(),
             _ => {
