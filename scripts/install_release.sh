@@ -35,7 +35,46 @@ case "$profile" in
     ;;
 esac
 
-cargo build --profile "$profile" --manifest-path "$repo_root/Cargo.toml"
+# Resolve the identity BEFORE building, so the binary embeds the same commit
+# that names its install directory.
+#
+# Without this, `jcode-build-meta/build.rs` deliberately does not watch
+# `.git/HEAD` (watching it turns routine git activity into full-tree rebuilds),
+# so an incremental build reuses whatever hash was baked in last time. The
+# install then lands in `versions/<new-hash>/` while `jcode --version` still
+# reports the old one, which makes "did my change actually ship?" unanswerable.
+# JCODE_BUILD_GIT_* are declared `rerun-if-env-changed`, so passing them forces
+# exactly the metadata refresh we want and nothing more.
+#
+# Deliberately NOT setting JCODE_RELEASE_BUILD: that flips the version string
+# from `-dev` to a bare release and marks the binary as a release build, which
+# is a different claim than "installed from a local source tree".
+short_hash=""
+git_date=""
+git_dirty="0"
+if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+  short_hash="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true)"
+  git_date="$(git -C "$repo_root" log -1 --format=%ci 2>/dev/null || true)"
+  if [[ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null || true)" ]]; then
+    git_dirty="1"
+  fi
+fi
+
+# Directory name keeps the historical `<hash>-dirty` suffix; the embedded hash
+# stays bare because build.rs renders dirtiness separately as ", dirty".
+hash="$short_hash"
+if [[ -n "$hash" ]] && [[ "$git_dirty" == "1" ]]; then
+  hash="${hash}-dirty"
+fi
+
+if [[ -z "$hash" ]]; then
+  hash="$(date +%Y%m%d%H%M%S)"
+fi
+
+JCODE_BUILD_GIT_HASH="$short_hash" \
+JCODE_BUILD_GIT_DATE="$git_date" \
+JCODE_BUILD_GIT_DIRTY="$git_dirty" \
+  cargo build --profile "$profile" --manifest-path "$repo_root/Cargo.toml"
 bin="$repo_root/target/$profile/jcode"
 
 if [[ ! -x "$bin" ]]; then
@@ -43,18 +82,16 @@ if [[ ! -x "$bin" ]]; then
   exit 1
 fi
 
-hash=""
-if command -v git >/dev/null 2>&1; then
-  if git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
-    hash="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true)"
-    if [[ -n "${hash}" ]] && [[ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null || true)" ]]; then
-      hash="${hash}-dirty"
-    fi
+# The install dir is named after this commit, so the binary must agree. If it
+# does not, the build script silently reused stale metadata and every later
+# "which build am I running?" check would lie.
+if [[ -n "$short_hash" ]]; then
+  embedded="$("$bin" --version 2>/dev/null || true)"
+  if [[ "$embedded" != *"$short_hash"* ]]; then
+    echo "Built binary reports '$embedded', which does not contain the expected commit '$short_hash'." >&2
+    echo "Refusing to install a binary that misreports its own identity." >&2
+    exit 1
   fi
-fi
-
-if [[ -z "$hash" ]]; then
-  hash="$(date +%Y%m%d%H%M%S)"
 fi
 
 # Install versioned binary into ~/.jcode/builds/versions/<hash>/
