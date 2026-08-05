@@ -5,7 +5,7 @@
 //!
 //! Automatically selects the best available backend:
 //! - OpenAI (gpt-5.6-luna, reasoning=none) if Codex credentials are available
-//! - Claude (claude-haiku-4-5-20241022) if Claude credentials are available
+//! - Claude (claude-haiku-4-5-20251001) if Claude credentials are available
 
 use crate::auth;
 use anyhow::{Context, Result};
@@ -19,7 +19,12 @@ const SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL: &str = "gpt-5.4";
 const SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING: &str = "low";
 
 /// Fast/cheap Claude model used when only Claude credentials are available.
-const SIDECAR_CLAUDE_MODEL: &str = "claude-haiku-4-5-20241022";
+///
+/// Must be a dated id the Anthropic catalogue actually publishes: the bare
+/// `claude-haiku-4-5` is rejected, and `claude-haiku-4-5-20241022` (the Haiku
+/// *3.5* date) 404s with `model: claude-haiku-4-5-20241022`, which silently
+/// disabled the memory consensus judge and armed its circuit breaker.
+const SIDECAR_CLAUDE_MODEL: &str = "claude-haiku-4-5-20251001";
 
 /// OpenAI Responses API
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
@@ -1037,6 +1042,30 @@ mod tests {
     #[test]
     fn test_sidecar_fast_model() {
         assert_eq!(SIDECAR_FAST_MODEL, "gpt-5.6-luna");
+    }
+
+    /// The sidecar Claude model must be a dated id Anthropic actually publishes.
+    ///
+    /// Regression: this was pinned to `claude-haiku-4-5-20241022`, which is the
+    /// Haiku *3.5* date. Every sidecar call 404'd with `not_found_error`, which
+    /// surfaced only as "Memory consensus judge failed; circuit breaker armed"
+    /// in the log while the feature quietly did nothing.
+    #[test]
+    fn sidecar_claude_model_is_the_published_haiku_45_snapshot() {
+        assert_eq!(SIDECAR_CLAUDE_MODEL, "claude-haiku-4-5-20251001");
+
+        let (base, date) = SIDECAR_CLAUDE_MODEL
+            .rsplit_once('-')
+            .expect("sidecar Claude model must carry a dated snapshot suffix");
+        assert_eq!(base, "claude-haiku-4-5");
+        assert!(
+            date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()),
+            "snapshot suffix must be an 8-digit date, got {date:?}"
+        );
+        assert_ne!(
+            date, "20241022",
+            "20241022 is the Haiku 3.5 date and 404s against a Haiku 4.5 base"
+        );
     }
 
     #[test]
