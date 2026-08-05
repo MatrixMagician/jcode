@@ -1050,6 +1050,12 @@ mod tests {
     /// Haiku *3.5* date. Every sidecar call 404'd with `not_found_error`, which
     /// surfaced only as "Memory consensus judge failed; circuit breaker armed"
     /// in the log while the feature quietly did nothing.
+    ///
+    /// `claude-haiku-4-5-20251001` was the newest Haiku in `GET /v1/models` at
+    /// the time of writing (and the only one). If a later Haiku ships, update
+    /// this pin and the assertion together — the point of asserting the exact
+    /// value is that moving to a new snapshot should be a deliberate edit
+    /// verified against the live catalogue, not a silent guess at a date.
     #[test]
     fn sidecar_claude_model_is_the_published_haiku_45_snapshot() {
         assert_eq!(SIDECAR_CLAUDE_MODEL, "claude-haiku-4-5-20251001");
@@ -1057,11 +1063,17 @@ mod tests {
         let (base, date) = SIDECAR_CLAUDE_MODEL
             .rsplit_once('-')
             .expect("sidecar Claude model must carry a dated snapshot suffix");
-        assert_eq!(base, "claude-haiku-4-5");
+        assert!(
+            base.starts_with("claude-haiku-"),
+            "sidecar model should stay on the cheap Haiku tier, got {base:?}"
+        );
         assert!(
             date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()),
             "snapshot suffix must be an 8-digit date, got {date:?}"
         );
+
+        // The specific trap this regression fell into: pairing a model family
+        // with a snapshot date belonging to a different generation of it.
         assert_ne!(
             date, "20241022",
             "20241022 is the Haiku 3.5 date and 404s against a Haiku 4.5 base"
